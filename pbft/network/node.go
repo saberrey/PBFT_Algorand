@@ -18,6 +18,7 @@ type Node struct {
 	MsgEntrance   chan interface{}
 	MsgDelivery   chan interface{}
 	Alarm         chan bool
+	Active        bool
 }
 
 type MsgBuffer struct {
@@ -45,9 +46,9 @@ func NewNode(nodeID string) *Node {
 			"MS": "localhost:5001",
 			"Google": "localhost:5002",
 			"IBM": "localhost:5003",
-			"test1": "localhost:5004",
-			"test2": "localhost:5005",
-			"test3": "localhost:5006",
+			//"test1": "localhost:5004",
+			//"test2": "localhost:5005",
+			//"test3": "localhost:5006",
 			//"test4": "localhost:5007",
 			//"test5": "localhost:5008",
 			//"test6": "localhost:5009",
@@ -74,9 +75,10 @@ func NewNode(nodeID string) *Node {
 		},
 
 		// Channels
-		MsgEntrance: make(chan interface{},100),
-		MsgDelivery: make(chan interface{},100),
+		MsgEntrance: make(chan interface{},10),
+		MsgDelivery: make(chan interface{},10),
 		Alarm: make(chan bool),
+		Active:false,
 	}
 
 	// Start message dispatcher
@@ -104,7 +106,7 @@ func (node *Node) Broadcast(msg interface{}, path string) map[string]error {
 			errorMap[nodeID] = err
 			continue
 		}
-
+		fmt.Printf("send to %s\n",(nodeID))
 		send(url + path, jsonMsg)
 	}
 
@@ -120,6 +122,7 @@ func (node *Node) Reply(msg *consensus.ReplyMsg) error {
 	for _, value := range node.CommittedMsgs {
 		fmt.Printf("Committed value: %s, %d, %s, %d", value.ClientID, value.Timestamp, value.Operation, value.SequenceID)
 	}
+
 	fmt.Print("\n")
 
 	jsonMsg, err := json.Marshal(msg)
@@ -127,7 +130,7 @@ func (node *Node) Reply(msg *consensus.ReplyMsg) error {
 		return err
 	}
 
-	// Client가 없으므로, 일단 Primary에게 보내는 걸로 처리.
+	// Client
 	send(node.NodeTable[node.View.Primary] + "/reply", jsonMsg)
 
 	return nil
@@ -137,8 +140,8 @@ func (node *Node) Reply(msg *consensus.ReplyMsg) error {
 // Consensus start procedure for the Primary.
 func (node *Node) GetReq(reqMsg *consensus.RequestMsg) error {
 	LogMsg(reqMsg)
-
 	// Create a new state for the new consensus.
+
 	err := node.createStateForNewConsensus()
 	if err != nil {
 		return err
@@ -166,6 +169,14 @@ func (node *Node) GetReq(reqMsg *consensus.RequestMsg) error {
 func (node *Node) GetPrePrepare(prePrepareMsg *consensus.PrePrepareMsg) error {
 	LogMsg(prePrepareMsg)
 
+	//判断是否在存储序列中
+	for i:=0;i<len(node.CommittedMsgs);i++{
+		if prePrepareMsg.SequenceID == node.CommittedMsgs[i].SequenceID{
+			return nil
+		}
+	}
+
+	fmt.Println("In pre-prepare")
 	// Create a new state for the new consensus.
 	err := node.createStateForNewConsensus()
 	if err != nil {
@@ -183,6 +194,7 @@ func (node *Node) GetPrePrepare(prePrepareMsg *consensus.PrePrepareMsg) error {
 
 		LogStage("Pre-prepare", true)
 		node.Broadcast(prePareMsg, "/prepare")
+		//node.CurrentState.MsgLogs.PrepareMsgs[prePareMsg.NodeID] = prePareMsg
 		LogStage("Prepare", false)
 	}
 
@@ -191,6 +203,13 @@ func (node *Node) GetPrePrepare(prePrepareMsg *consensus.PrePrepareMsg) error {
 
 func (node *Node) GetPrepare(prepareMsg *consensus.VoteMsg) error {
 	LogMsg(prepareMsg)
+	//判断是否在存储序列中
+
+	for i:=0;i<len(node.CommittedMsgs);i++{
+		if prepareMsg.SequenceID == node.CommittedMsgs[i].SequenceID{
+			return nil
+		}
+	}
 
 	commitMsg, err := node.CurrentState.Prepare(prepareMsg)
 	if err != nil {
@@ -212,10 +231,18 @@ func (node *Node) GetPrepare(prepareMsg *consensus.VoteMsg) error {
 func (node *Node) GetCommit(commitMsg *consensus.VoteMsg) error {
 	LogMsg(commitMsg)
 
+	//判断是否在存储序列中
+	for i:=0;i<len(node.CommittedMsgs);i++{
+		if commitMsg.SequenceID == node.CommittedMsgs[i].SequenceID{
+			return nil
+		}
+	}
+
 	replyMsg, committedMsg, err := node.CurrentState.Commit(commitMsg)
 	if err != nil {
 		return err
 	}
+
 
 	if replyMsg != nil {
 		if committedMsg == nil {
@@ -231,7 +258,11 @@ func (node *Node) GetCommit(commitMsg *consensus.VoteMsg) error {
 		LogStage("Commit", true)
 		node.Reply(replyMsg)
 		LogStage("Reply", true)
+
+		//what should leader do?
+		node.StateInitial()
 	}
+
 
 	return nil
 }
@@ -240,12 +271,26 @@ func (node *Node) GetReply(msg *consensus.ReplyMsg) {
 	fmt.Printf("Result: %s by %s\n", msg.Result, msg.NodeID)
 }
 
+func (node *Node) StateInitial(){
+	//clean the buffer
+	node.Active = false
+	node.MsgBuffer = &MsgBuffer{
+		ReqMsgs:        make([]*consensus.RequestMsg, 0),
+		PrePrepareMsgs: make([]*consensus.PrePrepareMsg, 0),
+		PrepareMsgs:    make([]*consensus.VoteMsg, 0),
+		CommitMsgs:     make([]*consensus.VoteMsg, 0),
+	}
+	fmt.Println("New consensus begin")
+
+}
+
 func (node *Node) createStateForNewConsensus() error {
 	// Check if there is an ongoing consensus process.
-	if node.CurrentState != nil {
+
+	if node.Active == true {
 		return errors.New("another consensus is ongoing")
 	}
-
+	node.Active = true
 	// Get the last sequence ID
 	var lastSequenceID int64
 	if len(node.CommittedMsgs) == 0 {
@@ -253,6 +298,7 @@ func (node *Node) createStateForNewConsensus() error {
 	} else {
 		lastSequenceID = node.CommittedMsgs[len(node.CommittedMsgs) - 1].SequenceID
 	}
+	fmt.Println(len(node.CommittedMsgs))
 	//-1开始？
 	// Create a new state for this new consensus process in the Primary
 	node.CurrentState = consensus.CreateState(node.View.ID, lastSequenceID)
@@ -266,6 +312,7 @@ func (node *Node) dispatchMsg() {
 	for {
 		select {
 		case msg := <-node.MsgEntrance:
+
 			err := node.routeMsg(msg)
 			if err != nil {
 				fmt.Println(err)
@@ -284,7 +331,8 @@ func (node *Node) dispatchMsg() {
 func (node *Node) routeMsg(msg interface{}) []error {
 	switch msg.(type) {
 	case *consensus.RequestMsg:
-		if node.CurrentState == nil {
+		fmt.Println(msg)
+		if node.Active == false {
 			// Copy buffered messages first.
 			msgs := make([]*consensus.RequestMsg, len(node.MsgBuffer.ReqMsgs))
 			copy(msgs, node.MsgBuffer.ReqMsgs)
@@ -301,7 +349,7 @@ func (node *Node) routeMsg(msg interface{}) []error {
 			node.MsgBuffer.ReqMsgs = append(node.MsgBuffer.ReqMsgs, msg.(*consensus.RequestMsg))
 		}
 	case *consensus.PrePrepareMsg:
-		if node.CurrentState == nil {
+		if node.Active == false {
 			// Copy buffered messages first.
 			msgs := make([]*consensus.PrePrepareMsg, len(node.MsgBuffer.PrePrepareMsgs))
 			copy(msgs, node.MsgBuffer.PrePrepareMsgs)
@@ -403,6 +451,7 @@ func (node *Node) resolveMsg() {
 	for {
 		// Get buffered messages from the dispatcher.
 		msgs := <-node.MsgDelivery
+		fmt.Println(msgs)
 		switch msgs.(type) {
 		case []*consensus.RequestMsg:
 			errs := node.resolveRequestMsg(msgs.([]*consensus.RequestMsg))
@@ -413,6 +462,7 @@ func (node *Node) resolveMsg() {
 				// TODO: send err to ErrorChannel
 			}
 		case []*consensus.PrePrepareMsg:
+
 			errs := node.resolvePrePrepareMsg(msgs.([]*consensus.PrePrepareMsg))
 			if len(errs) != 0 {
 				for _, err := range errs {
@@ -525,3 +575,4 @@ func (node *Node) resolveCommitMsg(msgs []*consensus.VoteMsg) []error {
 
 	return nil
 }
+

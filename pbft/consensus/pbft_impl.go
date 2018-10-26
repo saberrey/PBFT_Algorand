@@ -12,6 +12,7 @@ type State struct {
 	MsgLogs        *MsgLogs
 	LastSequenceID int64
 	CurrentStage   Stage
+
 }
 
 type MsgLogs struct {
@@ -31,7 +32,7 @@ const (
 // f: # of Byzantine faulty node
 // f = (n­1) / 3
 // n = 4, in this case.
-const f = 2
+const f = 1
 
 // lastSequenceID will be -1 if there is no last sequence ID.
 func CreateState(viewID int64, lastSequenceID int64) *State {
@@ -47,6 +48,17 @@ func CreateState(viewID int64, lastSequenceID int64) *State {
 	}
 }
 
+//func (state *State) StateInI() error{
+//	state.Active = false
+//	//state.MsgLogs = &MsgLogs{
+//	//	ReqMsg:nil,
+//	//	PrepareMsgs:make(map[string]*VoteMsg),
+//	//	CommitMsgs:make(map[string]*VoteMsg),
+//	//}
+//	return nil
+//
+//}
+
 func (state *State) StartConsensus(request *RequestMsg) (*PrePrepareMsg, error) {
 	// `sequenceID` will be the index of this message.
 	sequenceID := time.Now().UnixNano()
@@ -57,7 +69,7 @@ func (state *State) StartConsensus(request *RequestMsg) (*PrePrepareMsg, error) 
 			sequenceID += 1
 		}
 	}
-
+	fmt.Println()
 	// Assign a new sequence ID to the request message object.
 	request.SequenceID = sequenceID
 
@@ -116,9 +128,9 @@ func (state *State) Prepare(prepareMsg *VoteMsg) (*VoteMsg, error){
 	fmt.Printf("[Prepare-Vote]: %d\n", len(state.MsgLogs.PrepareMsgs))
 
 	//判断现在状态选择是否回应
-	if state.CurrentStage==Prepared||state.CurrentStage==Committed{
-		return nil,nil
-	}
+	//if state.CurrentStage==Prepared||state.CurrentStage==Committed{
+	//	return nil,nil
+	//}
 
 	if state.prepared() {
 		// Change the stage to prepared.
@@ -147,10 +159,11 @@ func (state *State) Commit(commitMsg *VoteMsg) (*ReplyMsg, *RequestMsg, error) {
 	// Print current voting status
 	fmt.Printf("[Commit-Vote]: %d\n", len(state.MsgLogs.CommitMsgs))
 
-	if state.CurrentStage==Committed{
-		fmt.Printf("[Commit-reply]: no")
-		return nil,nil,nil
-	}
+	//TODO:sequence has in chain
+	//if state.CurrentStage == Committed{
+	//	fmt.Printf("[Commit-reply]: no")
+	//	return nil,nil,nil
+	//}
 
 
 	if state.committed() {
@@ -178,7 +191,7 @@ func (state *State) verifyMsg(viewID int64, sequenceID int64, digestGot string) 
 	}
 
 	// Check if the Primary sent fault sequence number. => Faulty primary.
-	// TODO: adopt upper/lower bound check.
+
 	if state.LastSequenceID != -1 {
 		if state.LastSequenceID >= sequenceID {
 			return false
@@ -204,7 +217,7 @@ func (state *State) prepared() bool {
 		return false
 	}
 
-	if len(state.MsgLogs.PrepareMsgs) <= 2*f {
+	if len(state.MsgLogs.PrepareMsgs) < 2*f {
 		return false
 	}
 
@@ -216,7 +229,7 @@ func (state *State) committed() bool {
 		return false
 	}
 
-	if len(state.MsgLogs.CommitMsgs) <= 2*f {
+	if len(state.MsgLogs.CommitMsgs) < 2*f {
 		return false
 	}
 
